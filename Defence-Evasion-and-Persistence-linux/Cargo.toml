@@ -1,0 +1,15 @@
+[package]
+name = "malware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nix = { version = "0.29.0", features = ["fs", "process", "user"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = 'abort'
+strip = true
+codegen-units = 1
+
